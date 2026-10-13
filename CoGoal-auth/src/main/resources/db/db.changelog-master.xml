@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+    <include file="changeset/001-create-users.xml" relativeToChangelogFile="true"/>
+    <include file="changeset/002-create-user-role.xml" relativeToChangelogFile="true"/>
+    <include file="changeset/003-create-refresh-token.xml" relativeToChangelogFile="true"/>
+    <include file="changeset/004-create-main-profile-outbox.xml" relativeToChangelogFile="true"/>
+
+    <include file="changeset/005-account-actions.xml" relativeToChangelogFile="true"/>
+    <include file="changeset/006-prepare-bigint.xml" relativeToChangelogFile="true"/>
+    <include file="db/changelog/001-auth-schema.sql"/>
+    <include file="changeset/007-import-bigint.xml" relativeToChangelogFile="true"/>
+    <include file="changeset/008-replay-profiles-for-kafka.xml" relativeToChangelogFile="true"/>
+    <include file="changeset/009-profile-ownership.xml" relativeToChangelogFile="true"/>
+    <include file="changeset/010-drop-legacy-action-tokens.xml" relativeToChangelogFile="true"/>
+    <include file="changeset/011-drop-auth-legacy-tables.xml" relativeToChangelogFile="true"/>
+</databaseChangeLog>

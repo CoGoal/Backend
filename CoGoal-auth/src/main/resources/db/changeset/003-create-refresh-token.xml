@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+    <!-- Сам токен не хранится, только SHA-256 от него (hex).
+         family_id — один вход (login/register); все токены, полученные ротацией из него, в той же семье -->
+    <changeSet id="003-create-refresh-token" author="dev">
+        <createTable tableName="refresh_token">
+            <column name="id" type="UUID">
+                <constraints primaryKey="true" primaryKeyName="pk_refresh_token" nullable="false"/>
+            </column>
+            <column name="user_id" type="UUID">
+                <constraints nullable="false"/>
+            </column>
+            <column name="family_id" type="UUID">
+                <constraints nullable="false"/>
+            </column>
+            <column name="token_hash" type="VARCHAR(64)">
+                <constraints nullable="false" unique="true" uniqueConstraintName="uq_refresh_token_hash"/>
+            </column>
+            <column name="created_at" type="TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+            <column name="expires_at" type="TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+            <column name="revoked_at" type="TIMESTAMP"/>
+        </createTable>
+
+        <addForeignKeyConstraint constraintName="fk_refresh_token_user"
+                                 baseTableName="refresh_token" baseColumnNames="user_id"
+                                 referencedTableName="users" referencedColumnNames="id"
+                                 onDelete="CASCADE"/>
+
+        <createIndex tableName="refresh_token" indexName="idx_refresh_token_user_id">
+            <column name="user_id"/>
+        </createIndex>
+        <createIndex tableName="refresh_token" indexName="idx_refresh_token_family_id">
+            <column name="family_id"/>
+        </createIndex>
+        <createIndex tableName="refresh_token" indexName="idx_refresh_token_expires_at">
+            <column name="expires_at"/>
+        </createIndex>
+    </changeSet>
+</databaseChangeLog>

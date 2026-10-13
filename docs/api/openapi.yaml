@@ -1,0 +1,2007 @@
+openapi: 3.0.3
+info:
+  title: CoGoal API
+  version: 1.3.0
+  description: |
+    REST API сервиса взаимной подотчётности CoGoal.
+
+    **Базовые соглашения**
+    - Все пути начинаются с `/api/v1`.
+    - Авторизация — JWT в заголовке `Authorization: Bearer <accessToken>` (backend stateless, требование 2.3.1).
+    - Идентификаторы сущностей — целые числа BIGINT (`integer`, `int64`). JWT `sub` содержит десятичную строку ID пользователя.
+    - Даты — ISO 8601 в UTC (`2026-10-01T12:00:00Z`).
+    - Деньги — строка-десятичное число в рублях (`"500.00"`), чтобы не терять копейки на float.
+    - Ошибки всегда возвращаются в формате `Error` с сообщением на русском (требование 2.5.2).
+    - Списки возвращаются постранично в формате `{ items, page, size, totalItems, totalPages }`.
+    - Операции, связанные с деньгами, принимают заголовок `Idempotency-Key` (требования 1.1.19, 2.2.7).
+
+    **Что нужно добавить в ERD, чтобы этот API заработал**
+    1. Сумма залога нигде не хранится — добавить `deposit_amount` в `Pact` (или `Goal`).
+    2. `Pact.status` — добавить `FORMING` (ищем напарника) и `AWAITING_DEPOSITS` (ждём залогов, требование 1.3.10).
+    3. `PactParticipant.status` — добавить `REQUESTED` (отклик из ленты) и `FAILED` (нарушил обязательства); добавить `created_at`, чтобы считать 48 часов на ответ, и `termination_vote` (bool) для расторжения.
+    4. `Proof.type` — добавить `TEXT` (требование 1.3.15).
+    5. `CheckIn` — добавить `attempt_number` (лимит 3 попытки) и статус `AUTO_APPROVED`.
+    6. `User` — добавить `role` (USER/ADMIN); отдельные таблицы для refresh-токенов и токенов сброса пароля / смены email.
+    7. Нет истории монет (1.6.4) — таблица `CoinTransaction` (user_id, amount, reason, pact_id, created_at). Нет таблицы достижений (1.1.7).
+    8. `SupportTicket` — добавить `pact_id`, `screenshot_url`, `admin_comment`; статусы `OPEN, IN_PROGRESS, RESOLVED, REJECTED` вместо `CLOSED`.
+    9. `Transaction` — добавить `idempotency_key` (уникальный индекс); `User` или `Deposit` — `payment_method_id` провайдера (1.1.17).
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Локальная разработка
+  - url: https://cogoal.example.com/api/v1
+    description: Прод (пример)
+
+tags:
+  - name: Auth
+    description: Регистрация, вход, токены, восстановление пароля (1.1.1–1.1.5, 1.1.8, 2.2.6).
+  - name: Profile
+    description: Свой профиль и публичные профили других пользователей (1.1.6, 1.1.7, 1.1.9–1.1.11).
+  - name: Operations
+    description: История операций с монетами и залогами, экспорт в PDF (1.1.12–1.1.16).
+  - name: Dictionaries
+    description: Справочники — категории целей и благотворительные фонды (1.2.9, 1.4.11).
+  - name: Goals
+    description: Создание и редактирование целей и этапов, публичная лента (1.2.x, 1.3.1).
+  - name: Invitations
+    description: Приглашения по username и отклики из ленты — путь к заключению пакта (1.3.2–1.3.9).
+  - name: Pacts
+    description: Просмотр пактов и досрочное расторжение (1.3.10–1.3.14, 1.3.27–1.3.30).
+  - name: Deposits
+    description: Залоги участников и оплата через YooKassa (1.3.9–1.3.11, 1.4.x).
+  - name: CheckIns
+    description: Отчёты о выполнении этапов, доказательства и их проверка напарниками (1.3.15–1.3.18, 1.3.29).
+  - name: Files
+    description: Загрузка файлов (доказательства, аватары, скриншоты для поддержки).
+  - name: Chat
+    description: Чат участников пакта (1.5.1).
+  - name: Shop
+    description: Магазин предметов за виртуальные монеты (1.6.x).
+  - name: Support
+    description: Обращения в техподдержку со стороны пользователя (1.7.1, 1.7.2).
+  - name: Admin
+    description: Действия администратора / поддержки (1.7.3, 1.7.4).
+  - name: Webhooks
+    description: Входящие уведомления от платёжного провайдера (1.4.9, 1.4.10, 2.2.8).
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ───────────────────────────── AUTH ─────────────────────────────
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Регистрация нового пользователя
+      description: |
+        Создаёт аккаунт, сразу авторизует пользователя (возвращает токены) и начисляет стартовые монеты (1.1.3).
+        Проверяет уникальность email и username, длину пароля ≥ 8 (1.1.2). Пароль хранится как bcrypt-хеш (2.2.5).
+        Ответ содержит учётную запись `AuthUser`. Профиль и стартовые монеты создаются асинхронно
+        через outbox; `GET /users/me` до доставки может вернуть 404 `PROFILE_PENDING`.
+        При повторной доставке стартовые монеты не начисляются заново.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201':
+          description: Пользователь создан и авторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: Email или username уже заняты
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { code: USERNAME_TAKEN, message: "Этот username уже занят", details: [] }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Вход по email или логину и паролю
+      description: |
+        Поле `login` принимает email или username. Перед поиском удаляются пробелы по краям;
+        email и username сравниваются без учёта регистра. Значение с `@` ищется как email,
+        остальные значения — как username (username допускает только латинские буквы, цифры и `_`).
+        При неверных данных — понятная ошибка (1.1.5). После 5 неудачных попыток подряд аккаунт
+        блокируется на 30 минут (2.2.6) — используются поля `failed_login_attempts` и `locked_until`.
+        Счётчик попыток общий для аккаунта, независимо от входа по email или username.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+            examples:
+              byEmail:
+                summary: Вход по email
+                value: { login: ivan@mail.ru, password: secret123 }
+              byUsername:
+                summary: Вход по логину
+                value: { login: ivan_dev, password: secret123 }
+      responses:
+        '200':
+          description: Успешный вход
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401':
+          description: Неверный email, логин или пароль
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { code: INVALID_CREDENTIALS, message: "Неверный email, логин или пароль", details: [] }
+        '423':
+          description: Аккаунт временно заблокирован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { code: ACCOUNT_LOCKED, message: "Слишком много попыток входа. Попробуйте после 14:30", details: [] }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Обновить access-токен
+      description: Фронт вызывает, когда access-токен истёк (получил 401). Возвращает новую пару токенов.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: Новая пара токенов
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Выход
+      description: Инвалидирует refresh-токен (например, удаляет его из хранилища токенов).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '204': { description: Выход выполнен }
+
+  /auth/password/forgot:
+    post:
+      tags: [Auth]
+      summary: Запросить ссылку на сброс пароля
+      description: |
+        Отправляет на email ссылку со временным токеном (живёт 30 минут, 1.1.8).
+        Всегда отвечает 202, даже если email не найден — чтобы нельзя было перебором узнать, кто зарегистрирован.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email, example: ivan@mail.ru }
+      responses:
+        '202': { description: 'Если такой email есть, письмо отправлено' }
+
+  /auth/password/reset:
+    post:
+      tags: [Auth]
+      summary: Установить новый пароль по токену из письма
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, newPassword]
+              properties:
+                token: { type: string, description: Токен из ссылки в письме }
+                newPassword: { type: string, minLength: 8, writeOnly: true, description: 'До 72 байт UTF-8 (лимит BCrypt)', example: newSecret123 }
+      responses:
+        '204': { description: Пароль изменён }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '410':
+          description: Ссылка устарела или уже использована
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/email/confirm:
+    post:
+      tags: [Auth]
+      summary: Подтвердить смену email
+      description: Токен приходит письмом на новый адрес после `POST /users/me/email-change` (1.1.6).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        '204': { description: Email изменён }
+        '410': { description: Ссылка устарела }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Данные текущего аккаунта
+      description: Данные аккаунта из auth. Имя, аватар и баланс доступны в профиле main через GET /users/me.
+      responses:
+        '200':
+          description: Аккаунт
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthUser' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/me/username:
+    patch:
+      tags: [Auth]
+      summary: Изменить логин пользователя
+      description: Auth проверяет уникальность логина без учёта регистра. После сохранения вход доступен по новому логину; его копия в main обновляется через Kafka.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UsernameChangeRequest' }
+      responses:
+        '200':
+          description: Обновлённые данные аккаунта
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthUser' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { description: Username занят }
+
+  # ───────────────────────────── PROFILE ─────────────────────────────
+  /users/me:
+    get:
+      tags: [Profile]
+      summary: Мой профиль (приватные данные)
+      description: Возвращает всё, что видит сам пользователь — email, баланс монет, достижения (1.1.7).
+      responses:
+        '200':
+          description: Профиль
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MyProfile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: Профиль ещё создаётся, повторите запрос позже
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { code: PROFILE_PENDING, message: "Профиль ещё создаётся. Повторите запрос позже", details: [] }
+    patch:
+      tags: [Profile]
+      summary: Изменить имя или аватар
+      description: |
+        Метод main изменяет только данные профиля; username меняется через PATCH /auth/me/username.
+        Передаются только изменяемые поля. Явный avatarUrl: null удаляет аватар, пропущенное поле сохраняет его. Email меняется отдельно через подтверждение — `POST /users/me/email-change`.
+        `avatarUrl` берётся из ответа `POST /files`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateProfileRequest' }
+      responses:
+        '200':
+          description: Обновлённый профиль
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MyProfile' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: Профиль ещё создаётся, повторите запрос позже }
+
+  /users/me/email-change:
+    post:
+      tags: [Profile]
+      summary: Запросить смену email
+      description: Отправляет письмо с подтверждением на новый адрес. Email меняется только после `POST /auth/email/confirm`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newEmail, password]
+              properties:
+                newEmail: { type: string, format: email }
+                password: { type: string, description: Текущий пароль для подтверждения личности }
+      responses:
+        '202': { description: Письмо отправлено }
+        '409': { description: Email уже используется }
+
+  /users/me/active-item:
+    put:
+      tags: [Profile, Shop]
+      summary: Применить купленный предмет к профилю
+      description: Устанавливает `active_avatar_item_id`. Предмет должен быть куплен пользователем. `null` — снять.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                shopItemId: { type: integer, format: int64, nullable: true, example: 3 }
+      responses:
+        '200':
+          description: Профиль с применённым предметом
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MyProfile' }
+        '403': { description: Предмет не куплен }
+
+  /users/{username}:
+    get:
+      tags: [Profile]
+      summary: Публичный профиль по username
+      description: |
+        Доступен любому авторизованному пользователю (1.1.9). Содержит статистику (1.1.10).
+        **Не содержит** email, точный баланс монет и платёжные данные (1.1.11).
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema: { type: string, example: ivan_dev }
+      responses:
+        '200':
+          description: Публичный профиль
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicProfile' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ───────────────────────────── OPERATIONS ─────────────────────────────
+  /users/me/operations:
+    get:
+      tags: [Operations]
+      summary: История операций (монеты и залоги)
+      description: |
+        Единая лента: начисления/траты монет и финансовые операции с залогами (1.1.12, 1.1.13).
+        Фильтры по типу и периоду (1.1.14), 20 записей на страницу, сортировка по дате — новые сверху (1.1.15).
+        Должна отвечать ≤ 500 мс на 1000 записей (2.1.5) — нужны индексы по user_id и created_at.
+      parameters:
+        - name: type
+          in: query
+          description: Фильтр по типу операции (можно несколько через запятую)
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/OperationType' }
+          style: form
+          explode: false
+        - name: period
+          in: query
+          description: Быстрый период. Если `CUSTOM` — нужны `from` и `to`.
+          schema: { type: string, enum: [WEEK, MONTH, CUSTOM] }
+        - name: from
+          in: query
+          schema: { type: string, format: date, example: '2026-09-01' }
+        - name: to
+          in: query
+          schema: { type: string, format: date, example: '2026-09-30' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size20'
+      responses:
+        '200':
+          description: Страница операций
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageMeta'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Operation' }
+
+  /users/me/operations/export:
+    get:
+      tags: [Operations]
+      summary: Экспорт истории в PDF
+      description: Те же фильтры, что и у списка, но без пагинации. Возвращает файл (1.1.16).
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/OperationType' }
+          style: form
+          explode: false
+        - name: period
+          in: query
+          schema: { type: string, enum: [WEEK, MONTH, CUSTOM] }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: PDF-файл
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+
+  # ───────────────────────────── DICTIONARIES ─────────────────────────────
+  /categories:
+    get:
+      tags: [Dictionaries]
+      summary: Список категорий целей
+      description: Предопределённый список — «Учёба», «Спорт», «Работа», «Здоровье», «Другое» (1.2.9). Используется в форме создания цели и в фильтре ленты.
+      responses:
+        '200':
+          description: Категории
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Category' }
+
+  /charities:
+    get:
+      tags: [Dictionaries]
+      summary: Список благотворительных фондов
+      description: Только фонды с `is_active = true` (1.4.11). Нужен для выбора фонда при создании цели.
+      responses:
+        '200':
+          description: Фонды
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Charity' }
+
+  # ───────────────────────────── GOALS ─────────────────────────────
+  /goals:
+    get:
+      tags: [Goals]
+      summary: Публичная лента целей
+      description: |
+        Лента для поиска напарника (1.3.1): пагинация, фильтр по категории, поиск по названию, сортировка по дедлайну.
+        Не показывает свои цели, цели с уже активным пактом и цели, по которым висит ожидающее приглашение конкретному человеку (1.3.4).
+      parameters:
+        - name: categoryId
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: search
+          in: query
+          description: Поиск по подстроке в названии
+          schema: { type: string, example: java }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [deadline_asc, deadline_desc, created_desc], default: deadline_asc }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size20'
+      responses:
+        '200':
+          description: Страница целей
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageMeta'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/GoalCard' }
+    post:
+      tags: [Goals]
+      summary: Создать цель
+      description: |
+        Создаёт цель с этапами (1.2.1, 1.2.3), суммой залога и фондом (1.4.12).
+        Валидация: дедлайн в будущем, обязательные поля заполнены, дедлайны этапов не позже дедлайна цели (1.2.2).
+
+        Если передан `inviteUsername` — сразу отправляется приглашение (1.3.3) и цель скрыта из ленты,
+        пока приглашённый не ответит. Иначе цель сразу публикуется в ленте (1.2.4).
+        Вместе с целью создаётся пакт (без участников, кроме автора) — это удобная точка, к которой потом присоединяются напарники.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateGoalRequest' }
+      responses:
+        '201':
+          description: Цель создана
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Goal' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: Приглашённый username не найден }
+
+  /goals/my:
+    get:
+      tags: [Goals]
+      summary: Мои цели
+      description: Цели, где я автор. Для списка «где я участник» используйте `GET /pacts`.
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/GoalStatus' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size20'
+      responses:
+        '200':
+          description: Страница целей
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageMeta'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/GoalCard' }
+
+  /goals/{goalId}:
+    parameters:
+      - $ref: '#/components/parameters/GoalId'
+    get:
+      tags: [Goals]
+      summary: Детали цели
+      description: Цель с этапами, условиями залога и автором. Нужна для страницы цели из ленты перед откликом.
+      responses:
+        '200':
+          description: Цель
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Goal' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Goals]
+      summary: Редактировать цель
+      description: |
+        Только автор и только пока нет активного пакта (1.2.5). Можно менять название, описание, дедлайн, категорию.
+        Сумму залога и фонд после заключения активного пакта менять нельзя (1.2.6) — будет 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateGoalRequest' }
+      responses:
+        '200':
+          description: Обновлённая цель
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Goal' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Цель уже в активном пакте
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { code: GOAL_LOCKED_BY_PACT, message: "Цель нельзя изменить: по ней заключён активный пакт", details: [] }
+    delete:
+      tags: [Goals]
+      summary: Удалить цель
+      description: |
+        Только автор и только без активных пактов (1.2.7). Подтверждение («Вы уверены?») делает фронт.
+        Если пакт есть — 409 с текстом, что сначала нужно завершить или расторгнуть пакт (1.2.8).
+      responses:
+        '204': { description: Цель удалена }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Есть активный пакт
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { code: GOAL_HAS_ACTIVE_PACT, message: "Чтобы удалить цель, сначала завершите или расторгните пакт", details: [] }
+
+  /goals/{goalId}/milestones:
+    parameters:
+      - $ref: '#/components/parameters/GoalId'
+    post:
+      tags: [Goals]
+      summary: Добавить этап к цели
+      description: Только автор, только до заключения активного пакта (1.2.5).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MilestoneInput' }
+      responses:
+        '201':
+          description: Этап создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Milestone' }
+        '409': { description: Цель уже в активном пакте }
+
+  /goals/{goalId}/milestones/{milestoneId}:
+    parameters:
+      - $ref: '#/components/parameters/GoalId'
+      - name: milestoneId
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    patch:
+      tags: [Goals]
+      summary: Изменить этап
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MilestoneInput' }
+      responses:
+        '200':
+          description: Этап обновлён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Milestone' }
+        '409': { description: Цель уже в активном пакте }
+    delete:
+      tags: [Goals]
+      summary: Удалить этап
+      responses:
+        '204': { description: Этап удалён }
+        '409': { description: Цель уже в активном пакте }
+
+  # ───────────────────────────── INVITATIONS ─────────────────────────────
+  /goals/{goalId}/invitations:
+    parameters:
+      - $ref: '#/components/parameters/GoalId'
+    post:
+      tags: [Invitations]
+      summary: Пригласить напарника по username
+      description: |
+        Автор цели приглашает человека (1.3.3). Создаётся запись `PactParticipant` со статусом `INVITED`.
+        Цель скрывается из ленты, пока приглашение не принято/отклонено (1.3.4). Приглашённому уходит email (1.3.5).
+        Через 48 часов без ответа приглашение автоматически отклоняется (1.3.6) — это делает фоновая задача, не эндпоинт.
+        В пакте максимум 5 участников (1.3.27).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username]
+              properties:
+                username: { type: string, example: maria_k }
+      responses:
+        '201':
+          description: Приглашение отправлено
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invitation' }
+        '404': { description: Пользователь не найден }
+        '409': { description: 'Пользователь уже приглашён / в пакте, или пакт заполнен (5 человек)' }
+
+  /goals/{goalId}/join-requests:
+    parameters:
+      - $ref: '#/components/parameters/GoalId'
+    post:
+      tags: [Invitations]
+      summary: Откликнуться на цель из ленты
+      description: |
+        Пользователь хочет стать напарником по чужой цели (1.3.2). Создаётся `PactParticipant` со статусом `REQUESTED`.
+        Автор цели видит отклик во входящих и принимает/отклоняет его через `/invitations/{id}/accept|decline`.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message: { type: string, maxLength: 500, example: "Тоже готовлюсь к сессии, давай вместе!" }
+      responses:
+        '201':
+          description: Отклик отправлен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invitation' }
+        '409': { description: 'Уже откликнулся, это своя цель, или пакт заполнен' }
+
+  /invitations:
+    get:
+      tags: [Invitations]
+      summary: Мои приглашения и отклики
+      description: |
+        `incoming` — что ждёт МОЕГО решения: приглашения мне + отклики на мои цели.
+        `outgoing` — что отправил я и жду ответа.
+      parameters:
+        - name: direction
+          in: query
+          required: true
+          schema: { type: string, enum: [incoming, outgoing] }
+        - name: status
+          in: query
+          description: По умолчанию только ожидающие ответа
+          schema: { type: string, enum: [PENDING, ACCEPTED, DECLINED, EXPIRED], default: PENDING }
+      responses:
+        '200':
+          description: Список
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Invitation' }
+
+  /invitations/{invitationId}:
+    get:
+      tags: [Invitations]
+      summary: Детали приглашения
+      description: Показывает цель, этапы, сумму залога и фонд, чтобы человек понимал, на что соглашается (1.3.8).
+      parameters:
+        - $ref: '#/components/parameters/InvitationId'
+      responses:
+        '200':
+          description: Приглашение
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invitation' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /invitations/{invitationId}/accept:
+    post:
+      tags: [Invitations]
+      summary: Принять приглашение / отклик
+      description: |
+        Принять может тот, от кого ждут решения: приглашённый (для `INVITE`) или автор цели (для `JOIN_REQUEST`).
+        После принятия пакт переходит в `AWAITING_DEPOSITS` и для каждого участника создаётся `Deposit` в статусе
+        `PENDING_PAYMENT` (1.3.9). Активным пакт станет только когда все внесут залог (1.3.10).
+      parameters:
+        - $ref: '#/components/parameters/InvitationId'
+      responses:
+        '200':
+          description: Принято, возвращается пакт
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PactDetails' }
+        '409': { description: Приглашение уже обработано или истекло }
+
+  /invitations/{invitationId}/decline:
+    post:
+      tags: [Invitations]
+      summary: Отклонить приглашение / отклик
+      description: |
+        После отклонения автору цели приходит уведомление, и фронт предлагает: вернуть цель в ленту
+        (`POST /goals/{goalId}/publish`) или пригласить другого (1.3.7).
+      parameters:
+        - $ref: '#/components/parameters/InvitationId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '204': { description: Отклонено }
+        '409': { description: Уже обработано }
+
+  /invitations/{invitationId}/cancel:
+    post:
+      tags: [Invitations]
+      summary: Отозвать своё приглашение / отклик
+      parameters:
+        - $ref: '#/components/parameters/InvitationId'
+      responses:
+        '204': { description: Отозвано }
+
+  /goals/{goalId}/publish:
+    post:
+      tags: [Invitations, Goals]
+      summary: Вернуть цель в общую ленту
+      description: Используется после отклонения приглашения (1.3.7), чтобы снова искать напарника в ленте.
+      parameters:
+        - $ref: '#/components/parameters/GoalId'
+      responses:
+        '200':
+          description: Цель опубликована
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Goal' }
+
+  # ───────────────────────────── PACTS ─────────────────────────────
+  /pacts:
+    get:
+      tags: [Pacts]
+      summary: Мои пакты
+      description: Все пакты, где я участник (включая автора цели).
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/PactStatus' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size20'
+      responses:
+        '200':
+          description: Страница пактов
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageMeta'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/PactSummary' }
+
+  /pacts/{pactId}:
+    get:
+      tags: [Pacts]
+      summary: Детали пакта
+      description: |
+        Главная страница пакта (1.3.12): участники с индивидуальными статусами и статусами залогов (1.3.28),
+        цель, этапы, история чек-инов, финансовые условия, состояние голосования за расторжение.
+        Доступно только участникам.
+      parameters:
+        - $ref: '#/components/parameters/PactId'
+      responses:
+        '200':
+          description: Пакт
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PactDetails' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /pacts/{pactId}/termination-votes:
+    parameters:
+      - $ref: '#/components/parameters/PactId'
+    post:
+      tags: [Pacts]
+      summary: Проголосовать за досрочное расторжение
+      description: |
+        Расторжение возможно только при согласии **всех** активных участников и если никто не нарушил обязательства (1.3.13).
+        Когда проголосовал последний — пакт становится `CANCELLED`, всем залогам ставится `REFUND_PENDING`,
+        в Kafka уходит событие на возврат (1.3.14).
+      responses:
+        '200':
+          description: Голос учтён, возвращается текущее состояние голосования
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TerminationState' }
+        '409':
+          description: Расторжение невозможно (есть нарушения или пакт не активен)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [Pacts]
+      summary: Отозвать свой голос за расторжение
+      responses:
+        '200':
+          description: Голос отозван
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TerminationState' }
+
+  # ───────────────────────────── DEPOSITS ─────────────────────────────
+  /pacts/{pactId}/deposits/me:
+    get:
+      tags: [Deposits]
+      summary: Статус моего залога в пакте
+      description: Показывает статус понятным текстом (`statusLabel`) без технических данных провайдера (1.4.5, 2.5.4, 2.5.5).
+      parameters:
+        - $ref: '#/components/parameters/PactId'
+      responses:
+        '200':
+          description: Залог
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Deposit' }
+        '404': { description: Залога ещё нет (пакт не принят) }
+
+  /pacts/{pactId}/deposits/me/payment:
+    post:
+      tags: [Deposits]
+      summary: Начать оплату залога
+      description: |
+        Создаёт платёж в YooKassa и возвращает `confirmationUrl` — фронт делает редирект на страницу оплаты провайдера.
+        Данные карты вводятся только там, наш сервер их не видит (2.2.1, 2.2.2).
+
+        **Идемпотентность (2.2.7):** обязательный заголовок `Idempotency-Key` (UUID, генерирует фронт один раз на попытку оплаты).
+        Повторный запрос с тем же ключом вернёт тот же платёж, а не создаст второй.
+        Итог оплаты придёт вебхуком (`POST /webhooks/yookassa`); фронт после возврата со страницы оплаты опрашивает `GET .../deposits/me`.
+
+        Ответ ≤ 3 сек для 95% запросов (2.1.1).
+      parameters:
+        - $ref: '#/components/parameters/PactId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                returnUrl:
+                  type: string
+                  format: uri
+                  description: Куда провайдер вернёт пользователя после оплаты
+                  example: https://cogoal.example.com/pacts/42?payment=done
+      responses:
+        '201':
+          description: Платёж создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentInitResponse' }
+        '409': { description: Залог уже оплачен или пакт не ожидает залогов }
+        '503':
+          description: Платёжный провайдер недоступен. Операция сохранена, можно повторить позже (2.4.3).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ───────────────────────────── CHECK-INS ─────────────────────────────
+  /pacts/{pactId}/checkins:
+    parameters:
+      - $ref: '#/components/parameters/PactId'
+    get:
+      tags: [CheckIns]
+      summary: История чек-инов пакта
+      parameters:
+        - name: milestoneId
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: participantId
+          in: query
+          description: Только чек-ины конкретного участника
+          schema: { type: integer, format: int64 }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/CheckInStatus' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size20'
+      responses:
+        '200':
+          description: Страница чек-инов
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageMeta'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/CheckIn' }
+    post:
+      tags: [CheckIns]
+      summary: Отправить отчёт с доказательствами
+      description: |
+        Участник отчитывается по этапу (или по цели целиком, если этапов нет — `milestoneId: null`) (1.3.15).
+        Доказательства: файл (сначала загрузить через `POST /files`), ссылка или текст.
+
+        Если предыдущий отчёт по этапу отклонён — можно отправить снова, всего **3 попытки** (1.3.17).
+        После 3-й отклонённой попытки — 409. Напарникам уходит email (1.5.2).
+        Если за 48 часов никто не проверит — отчёт принимается автоматически (1.3.18, фоновая задача).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateCheckInRequest' }
+      responses:
+        '201':
+          description: Отчёт отправлен на проверку
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckIn' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: Попытки закончились, этап уже принят, или дедлайн прошёл
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { code: NO_ATTEMPTS_LEFT, message: "Попытки для этого этапа закончились (3 из 3)", details: [] }
+
+  /checkins/{checkinId}:
+    get:
+      tags: [CheckIns]
+      summary: Детали чек-ина
+      description: Отчёт, доказательства, все проверки напарников, остаток попыток, когда сработает авто-принятие.
+      parameters:
+        - $ref: '#/components/parameters/CheckInId'
+      responses:
+        '200':
+          description: Чек-ин
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckIn' }
+
+  /checkins/{checkinId}/reviews:
+    post:
+      tags: [CheckIns]
+      summary: Принять или отклонить отчёт напарника
+      description: |
+        Проверять может любой другой участник пакта, свой отчёт — нельзя (1.3.16).
+        При `REJECTED` поле `comment` (причина) обязательно.
+        В групповом пакте: достаточно одного `APPROVED` чтобы засчитать, и одного `REJECTED` чтобы отклонить (1.3.29) —
+        то есть решение принимает первый проверивший.
+      parameters:
+        - $ref: '#/components/parameters/CheckInId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateReviewRequest' }
+      responses:
+        '201':
+          description: Решение записано, возвращается обновлённый чек-ин
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckIn' }
+        '400':
+          description: Не указана причина отклонения
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { code: VALIDATION_ERROR, message: "Укажите причину отклонения", details: [{ field: comment, message: "Обязательное поле" }] }
+        '403': { description: Нельзя проверять свой отчёт или вы не участник пакта }
+        '409': { description: Отчёт уже проверен }
+
+  # ───────────────────────────── FILES ─────────────────────────────
+  /files:
+    post:
+      tags: [Files]
+      summary: Загрузить файл
+      description: |
+        Универсальная загрузка: доказательство, аватар, скриншот для поддержки.
+        Возвращает `url`, который потом передаётся в нужный эндпоинт (`proofs[].fileUrl`, `avatarUrl`, `screenshotUrl`).
+        Ограничения (предложение): до 10 МБ, типы jpg/png/webp/pdf.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, purpose]
+              properties:
+                file: { type: string, format: binary }
+                purpose: { type: string, enum: [PROOF, AVATAR, SUPPORT] }
+      responses:
+        '201':
+          description: Файл загружен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string, example: /files/7f3c2a1e.jpg }
+                  contentType: { type: string, example: image/jpeg }
+                  sizeBytes: { type: integer, example: 482113 }
+        '413': { description: Файл слишком большой }
+        '415': { description: Неподдерживаемый тип файла }
+
+  # ───────────────────────────── CHAT ─────────────────────────────
+  /pacts/{pactId}/messages:
+    parameters:
+      - $ref: '#/components/parameters/PactId'
+    get:
+      tags: [Chat]
+      summary: История чата пакта
+      description: |
+        Только для участников пакта (1.5.1). Курсорная пагинация: первый запрос без `before` — последние сообщения,
+        дальше `before = id` самого старого загруженного сообщения. Для «живого» чата на MVP достаточно опроса
+        с `after` раз в несколько секунд (позже можно заменить на WebSocket).
+      parameters:
+        - name: before
+          in: query
+          description: Вернуть сообщения старше этого id
+          schema: { type: integer, format: int64 }
+        - name: after
+          in: query
+          description: Вернуть сообщения новее этого id (для опроса новых)
+          schema: { type: integer, format: int64 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 100 }
+      responses:
+        '200':
+          description: Сообщения (от старых к новым)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Message' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Chat]
+      summary: Отправить сообщение
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, minLength: 1, maxLength: 2000, example: "Сдал первый этап, проверь пожалуйста" }
+      responses:
+        '201':
+          description: Сообщение отправлено
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ───────────────────────────── SHOP ─────────────────────────────
+  /shop/items:
+    get:
+      tags: [Shop]
+      summary: Каталог магазина
+      description: Только товары с `is_active = true` (1.6.5). Флаг `owned` показывает, куплен ли уже товар.
+      parameters:
+        - name: itemType
+          in: query
+          schema: { $ref: '#/components/schemas/ShopItemType' }
+      responses:
+        '200':
+          description: Товары
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ShopItem' }
+
+  /shop/items/{itemId}/purchase:
+    post:
+      tags: [Shop]
+      summary: Купить предмет за монеты
+      description: |
+        Атомарно списывает монеты и добавляет предмет в коллекцию (1.6.6, 1.6.7). Запись в истории операций — `COINS_SPENT`.
+        Монеты — только виртуальная валюта, реальных денег здесь нет (1.6.2).
+      parameters:
+        - name: itemId
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '201':
+          description: Покупка совершена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Purchase' }
+        '402':
+          description: Недостаточно монет
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { code: NOT_ENOUGH_COINS, message: "Не хватает 40 монет", details: [] }
+        '409': { description: Предмет уже куплен }
+
+  /users/me/inventory:
+    get:
+      tags: [Shop]
+      summary: Мои купленные предметы
+      responses:
+        '200':
+          description: Коллекция
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Purchase' }
+
+  # ───────────────────────────── SUPPORT ─────────────────────────────
+  /support/tickets:
+    get:
+      tags: [Support]
+      summary: Мои обращения
+      responses:
+        '200':
+          description: Обращения
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SupportTicket' }
+    post:
+      tags: [Support]
+      summary: Создать обращение
+      description: Тема, описание, опционально скриншот (url из `POST /files`) и привязка к пакту (1.7.1). Создаётся в статусе `OPEN` (1.7.2).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTicketRequest' }
+      responses:
+        '201':
+          description: Обращение создано
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportTicket' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /support/tickets/{ticketId}:
+    get:
+      tags: [Support]
+      summary: Детали обращения
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      responses:
+        '200':
+          description: Обращение
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportTicket' }
+
+  # ───────────────────────────── ADMIN ─────────────────────────────
+  /admin/support/tickets:
+    get:
+      tags: [Admin]
+      summary: Все обращения (для поддержки)
+      description: Требует роль `ADMIN` (1.7.3).
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/TicketStatus' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size20'
+      responses:
+        '200':
+          description: Страница обращений
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageMeta'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/SupportTicket' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/support/tickets/{ticketId}:
+    patch:
+      tags: [Admin]
+      summary: Сменить статус обращения
+      description: «В работе», «Решено», «Отклонено» (1.7.3).
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/TicketStatus' }
+                comment: { type: string, description: Ответ пользователю }
+      responses:
+        '200':
+          description: Обновлённое обращение
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportTicket' }
+
+  /admin/transactions:
+    get:
+      tags: [Admin]
+      summary: Финансовые операции с ошибками
+      description: Список для разбора — по умолчанию `status=FAILED` (1.3.26).
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/TransactionStatus' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size20'
+      responses:
+        '200':
+          description: Страница транзакций
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageMeta'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Transaction' }
+
+  /admin/transactions/{transactionId}/retry:
+    post:
+      tags: [Admin]
+      summary: Повторить неуспешную финансовую операцию
+      description: |
+        Для возврата или перечисления в фонд со статусом `FAILED` (1.7.4). Повтор идёт с тем же ключом
+        идемпотентности у провайдера, поэтому двойного возврата не будет (2.4.4). Пишется в `PaymentAuditLog`.
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '202':
+          description: Повторная обработка запущена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transaction' }
+        '409': { description: Операция не в статусе FAILED }
+
+  # ───────────────────────────── WEBHOOKS ─────────────────────────────
+  /webhooks/yookassa:
+    post:
+      tags: [Webhooks]
+      summary: Уведомление от YooKassa
+      description: |
+        Вызывает **не фронт, а YooKassa**. Без JWT, но с проверкой подлинности (2.2.8):
+        проверка IP из списка YooKassa и/или повторный запрос статуса платежа через API провайдера.
+
+        Что делает backend:
+        1. Находит `Transaction` по `object.id` (= `provider_operation_id`).
+        2. Если событие уже обработано — просто отвечает 200 (1.4.10, идемпотентность).
+        3. Меняет статусы `Transaction` и `Deposit` в одной транзакции БД (2.4.1), пишет `PaymentAuditLog`.
+        4. Публикует событие в Kafka (для email и логики пакта).
+
+        Всегда отвечать 200 быстро, иначе YooKassa будет слать повторно.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/YooKassaWebhook' }
+      responses:
+        '200': { description: Принято (в том числе повторное) }
+        '400': { description: Невалидное или неподлинное уведомление }
+
+# ═════════════════════════════ COMPONENTS ═════════════════════════════
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      description: Номер страницы, с 0
+      schema: { type: integer, minimum: 0, default: 0 }
+    Size20:
+      name: size
+      in: query
+      description: Размер страницы
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    GoalId:
+      name: goalId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    PactId:
+      name: pactId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    InvitationId:
+      name: invitationId
+      in: path
+      required: true
+      description: Это `PactParticipant.id`
+      schema: { type: integer, format: int64 }
+    CheckInId:
+      name: checkinId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    TicketId:
+      name: ticketId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: UUID, уникальный для одной попытки операции. Повтор с тем же ключом не создаёт новую операцию.
+      schema: { type: string, format: uuid, example: 3f1c9a5e-8b2d-4c1a-9f7e-2a6b0d4e8c11 }
+
+  responses:
+    ValidationError:
+      description: Ошибка валидации
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            code: VALIDATION_ERROR
+            message: Проверьте заполнение полей
+            details:
+              - { field: password, message: "Пароль должен быть не короче 8 символов" }
+              - { field: deadline, message: "Дедлайн должен быть в будущем" }
+    Unauthorized:
+      description: Нет токена или он недействителен
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: UNAUTHORIZED, message: "Требуется авторизация", details: [] }
+    Forbidden:
+      description: Нет прав на действие
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: FORBIDDEN, message: "Недостаточно прав", details: [] }
+    NotFound:
+      description: Не найдено
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: NOT_FOUND, message: "Объект не найден", details: [] }
+
+  schemas:
+    # ── Общие ──
+    Error:
+      type: object
+      description: Единый формат ошибки
+      required: [code, message]
+      properties:
+        code: { type: string, description: Машинный код для фронта, example: VALIDATION_ERROR }
+        message: { type: string, description: Текст для пользователя на русском, example: "Проверьте заполнение полей" }
+        details:
+          type: array
+          description: Ошибки по конкретным полям формы
+          items:
+            type: object
+            properties:
+              field: { type: string, example: email }
+              message: { type: string, example: "Некорректный email" }
+    PageMeta:
+      type: object
+      properties:
+        page: { type: integer, example: 0 }
+        size: { type: integer, example: 20 }
+        totalItems: { type: integer, example: 57 }
+        totalPages: { type: integer, example: 3 }
+    Money:
+      type: string
+      description: Сумма в рублях, строкой с 2 знаками после точки
+      pattern: '^\d+\.\d{2}$'
+      example: '500.00'
+    UserShort:
+      type: object
+      description: Минимум данных о пользователе для карточек и списков
+      properties:
+        id: { type: integer, format: int64 }
+        username: { type: string, example: ivan_dev }
+        name: { type: string, example: Иван }
+        avatarUrl: { type: string, nullable: true, example: /files/a1b2.png }
+
+    # ── Auth ──
+    RegisterRequest:
+      type: object
+      required: [email, username, name, password]
+      properties:
+        email: { type: string, format: email, example: ivan@mail.ru }
+        username: { type: string, pattern: '^[a-zA-Z0-9_]{3,32}$', example: ivan_dev }
+        name: { type: string, maxLength: 100, example: Иван }
+        password: { type: string, minLength: 8, writeOnly: true, description: 'До 72 байт UTF-8 (лимит BCrypt)', example: secret123 }
+    LoginRequest:
+      type: object
+      required: [login, password]
+      properties:
+        login:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Email или username. Пробелы по краям удаляются, регистр не учитывается.
+          example: ivan_dev
+        password: { type: string, minLength: 1, writeOnly: true, description: 'До 72 байт UTF-8', example: secret123 }
+    AuthResponse:
+      type: object
+      required: [accessToken, refreshToken, expiresIn, user]
+      properties:
+        accessToken: { type: string, description: 'JWT, живёт ~15 минут' }
+        refreshToken: { type: string, description: Живёт ~30 дней }
+        expiresIn: { type: integer, description: Секунд до истечения access-токена, example: 900 }
+        user: { $ref: '#/components/schemas/AuthUser' }
+        tokenType: { type: string, enum: [Bearer] }
+        refreshExpiresIn: { type: integer, description: Секунд до истечения refresh-токена }
+
+    AuthUser:
+      type: object
+      required: [id, email, username, role, createdAt]
+      properties:
+        id: { type: integer, format: int64 }
+        email: { type: string, format: email }
+        username: { type: string }
+        role: { type: string, enum: [USER, ADMIN] }
+        roles: { type: array, items: { type: string, enum: [USER, ADMIN] } }
+        createdAt: { type: string, format: date-time }
+
+    # ── Profile ──
+    MyProfile:
+      type: object
+      description: Приватный профиль — только для самого пользователя
+      properties:
+        id: { type: integer, format: int64 }
+        username: { type: string, example: ivan_dev }
+        email: { type: string, format: email, example: ivan@mail.ru }
+        name: { type: string, example: Иван }
+        avatarUrl: { type: string, nullable: true }
+        activeItem: { $ref: '#/components/schemas/ShopItem' }
+        coins: { type: integer, example: 150 }
+        role: { type: string, enum: [USER, ADMIN], example: USER }
+        achievements:
+          type: array
+          items: { $ref: '#/components/schemas/Achievement' }
+        stats: { $ref: '#/components/schemas/UserStats' }
+        createdAt: { type: string, format: date-time }
+    PublicProfile:
+      type: object
+      description: Публичный профиль. Без email, баланса и платёжных данных (1.1.11).
+      properties:
+        username: { type: string, example: ivan_dev }
+        name: { type: string, example: Иван }
+        avatarUrl: { type: string, nullable: true }
+        activeItem: { $ref: '#/components/schemas/ShopItem' }
+        achievements:
+          type: array
+          items: { $ref: '#/components/schemas/Achievement' }
+        stats: { $ref: '#/components/schemas/UserStats' }
+        memberSince: { type: string, format: date }
+    UserStats:
+      type: object
+      properties:
+        completedGoals: { type: integer, example: 4 }
+        activePacts: { type: integer, example: 1 }
+        failedGoals: { type: integer, example: 1 }
+    Achievement:
+      type: object
+      properties:
+        code: { type: string, example: FIRST_PACT_COMPLETED }
+        title: { type: string, example: Первый пакт выполнен }
+        receivedAt: { type: string, format: date-time }
+    UsernameChangeRequest:
+      type: object
+      required: [username]
+      properties:
+        username: { type: string, pattern: '^[a-zA-Z0-9_]{3,32}$' }
+    UpdateProfileRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100, pattern: '.*\S.*' }
+        avatarUrl: { type: string, nullable: true, maxLength: 2048 }
+
+    # ── Operations ──
+    OperationType:
+      type: string
+      description: |
+        COINS_EARNED — начисление монет, COINS_SPENT — покупка в магазине,
+        DEPOSIT — внесение залога, REFUND — возврат залога, CHARITY_TRANSFER — перечисление в фонд
+      enum: [COINS_EARNED, COINS_SPENT, DEPOSIT, REFUND, CHARITY_TRANSFER]
+    Operation:
+      type: object
+      description: Запись истории. Для финансовых — обязательно дата, тип, сумма, пакт, статус (1.1.13).
+      properties:
+        id: { type: string, example: 'tx-481', description: 'Префикс tx- — транзакция залога, coin- — операция с монетами' }
+        type: { $ref: '#/components/schemas/OperationType' }
+        createdAt: { type: string, format: date-time }
+        amount: { $ref: '#/components/schemas/Money' }
+        currency: { type: string, example: RUB, description: 'RUB или COINS' }
+        status: { $ref: '#/components/schemas/TransactionStatus' }
+        statusLabel: { type: string, example: Успешно }
+        pact:
+          type: object
+          nullable: true
+          properties:
+            id: { type: integer, format: int64 }
+            goalTitle: { type: string, example: Сдать курсовую по БД }
+        description: { type: string, example: Возврат залога за выполненный пакт }
+
+    # ── Dictionaries ──
+    Category:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string, example: Учёба }
+        description: { type: string, example: 'Экзамены, курсы, новые навыки' }
+    Charity:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string, example: Фонд «Подари жизнь» }
+        description: { type: string }
+        websiteUrl: { type: string, format: uri }
+
+    # ── Goals ──
+    GoalStatus:
+      type: string
+      enum: [ACTIVE, COMPLETED, CANCELLED]
+    GoalVisibility:
+      type: string
+      description: |
+        PUBLIC — в ленте, INVITE_PENDING — скрыта, ждём ответа приглашённого (1.3.4),
+        IN_PACT — в активном пакте, в ленте не показывается
+      enum: [PUBLIC, INVITE_PENDING, IN_PACT]
+    MilestoneInput:
+      type: object
+      required: [title, deadline]
+      properties:
+        title: { type: string, maxLength: 200, example: Написать теоретическую часть }
+        description: { type: string, maxLength: 2000 }
+        deadline: { type: string, format: date-time, example: '2026-10-15T20:59:00Z' }
+    Milestone:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        title: { type: string, example: Написать теоретическую часть }
+        description: { type: string }
+        deadline: { type: string, format: date-time }
+        status: { type: string, enum: [PENDING, IN_PROGRESS, COMPLETED, FAILED] }
+        completedAt: { type: string, format: date-time, nullable: true }
+    CreateGoalRequest:
+      type: object
+      required: [title, categoryId, deadline, depositAmount, charityId]
+      properties:
+        title: { type: string, maxLength: 200, example: Сдать курсовую по БД }
+        description: { type: string, maxLength: 5000, example: Спроектировать схему и написать отчёт }
+        categoryId: { type: integer, format: int64 }
+        deadline: { type: string, format: date-time, example: '2026-11-30T20:59:00Z' }
+        depositAmount:
+          allOf: [ { $ref: '#/components/schemas/Money' } ]
+          description: Сумма залога для каждого участника
+        charityId: { type: integer, format: int64 }
+        milestones:
+          type: array
+          items: { $ref: '#/components/schemas/MilestoneInput' }
+        inviteUsername:
+          type: string
+          nullable: true
+          description: Если указан — сразу приглашение этому человеку, цель скрыта из ленты
+          example: maria_k
+    UpdateGoalRequest:
+      type: object
+      properties:
+        title: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 5000 }
+        categoryId: { type: integer, format: int64 }
+        deadline: { type: string, format: date-time }
+        depositAmount: { $ref: '#/components/schemas/Money' }
+        charityId: { type: integer, format: int64 }
+    GoalCard:
+      type: object
+      description: Короткая карточка для ленты и списков
+      properties:
+        id: { type: integer, format: int64 }
+        title: { type: string, example: Сдать курсовую по БД }
+        category: { $ref: '#/components/schemas/Category' }
+        author: { $ref: '#/components/schemas/UserShort' }
+        deadline: { type: string, format: date-time }
+        depositAmount: { $ref: '#/components/schemas/Money' }
+        milestonesCount: { type: integer, example: 3 }
+        participantsCount: { type: integer, example: 1 }
+        status: { $ref: '#/components/schemas/GoalStatus' }
+        visibility: { $ref: '#/components/schemas/GoalVisibility' }
+    Goal:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        title: { type: string }
+        description: { type: string }
+        category: { $ref: '#/components/schemas/Category' }
+        author: { $ref: '#/components/schemas/UserShort' }
+        deadline: { type: string, format: date-time }
+        depositAmount: { $ref: '#/components/schemas/Money' }
+        charity: { $ref: '#/components/schemas/Charity' }
+        status: { $ref: '#/components/schemas/GoalStatus' }
+        visibility: { $ref: '#/components/schemas/GoalVisibility' }
+        milestones:
+          type: array
+          items: { $ref: '#/components/schemas/Milestone' }
+        pactId: { type: integer, format: int64, description: 'Пакт, созданный вместе с целью' }
+        editable: { type: boolean, description: 'false, если есть активный пакт — фронт блокирует форму' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    # ── Invitations ──
+    Invitation:
+      type: object
+      description: Приглашение или отклик. Физически это запись PactParticipant в статусе INVITED / REQUESTED.
+      properties:
+        id: { type: integer, format: int64 }
+        kind:
+          type: string
+          enum: [INVITE, JOIN_REQUEST]
+          description: INVITE — автор позвал человека, JOIN_REQUEST — человек сам откликнулся из ленты
+        status: { type: string, enum: [PENDING, ACCEPTED, DECLINED, EXPIRED] }
+        from: { $ref: '#/components/schemas/UserShort' }
+        to: { $ref: '#/components/schemas/UserShort' }
+        goal: { $ref: '#/components/schemas/Goal' }
+        pactId: { type: integer, format: int64 }
+        message: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time, description: createdAt + 48 часов (1.3.6) }
+
+    # ── Pacts ──
+    PactStatus:
+      type: string
+      description: |
+        FORMING — ищем напарника, AWAITING_DEPOSITS — все согласились, ждём залогов,
+        ACTIVE — все залоги внесены (1.3.10), COMPLETED — завершён, CANCELLED — расторгнут
+      enum: [FORMING, AWAITING_DEPOSITS, ACTIVE, COMPLETED, CANCELLED]
+    ParticipantStatus:
+      type: string
+      enum: [INVITED, REQUESTED, ACTIVE, REJECTED, LEFT, COMPLETED, FAILED]
+    Participant:
+      type: object
+      description: Участник с индивидуальными статусами (1.3.28)
+      properties:
+        participantId: { type: integer, format: int64 }
+        user: { $ref: '#/components/schemas/UserShort' }
+        isAuthor: { type: boolean }
+        status: { $ref: '#/components/schemas/ParticipantStatus' }
+        depositStatus: { $ref: '#/components/schemas/DepositStatus' }
+        depositStatusLabel: { type: string, example: Залог внесён }
+        completedMilestones: { type: integer, example: 2 }
+        joinedAt: { type: string, format: date-time, nullable: true }
+    PactSummary:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        goal: { $ref: '#/components/schemas/GoalCard' }
+        status: { $ref: '#/components/schemas/PactStatus' }
+        participants:
+          type: array
+          items: { $ref: '#/components/schemas/UserShort' }
+        nextDeadline: { type: string, format: date-time, nullable: true }
+        myDepositStatus: { $ref: '#/components/schemas/DepositStatus' }
+        pendingReviewsCount: { type: integer, description: Сколько чужих отчётов ждут моей проверки, example: 1 }
+    PactDetails:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        status: { $ref: '#/components/schemas/PactStatus' }
+        goal: { $ref: '#/components/schemas/Goal' }
+        participants:
+          type: array
+          items: { $ref: '#/components/schemas/Participant' }
+        financialTerms:
+          type: object
+          properties:
+            depositAmount: { $ref: '#/components/schemas/Money' }
+            currency: { type: string, example: RUB }
+            charity: { $ref: '#/components/schemas/Charity' }
+            rewardCoins: { type: integer, description: Сколько монет получит каждый при успехе, example: 100 }
+        recentCheckIns:
+          type: array
+          description: Последние чек-ины, полная история — GET /pacts/{id}/checkins
+          items: { $ref: '#/components/schemas/CheckIn' }
+        termination: { $ref: '#/components/schemas/TerminationState' }
+        myParticipantId: { type: integer, format: int64, description: Мой PactParticipant.id в этом пакте }
+        createdAt: { type: string, format: date-time }
+    TerminationState:
+      type: object
+      properties:
+        canTerminate: { type: boolean, description: 'false, если есть нарушения' }
+        votedParticipantIds:
+          type: array
+          items: { type: integer, format: int64 }
+        requiredVotes: { type: integer, example: 2 }
+
+    # ── Deposits / payments ──
+    DepositStatus:
+      type: string
+      description: |
+        PENDING_PAYMENT — «Ожидает оплаты», PAID — «Залог внесён» (заблокирован),
+        REFUND_PENDING — «Ожидается возврат», REFUNDED — «Залог возвращён»,
+        CHARITY_TRANSFER_PENDING — «Подлежит перечислению в фонд», TRANSFERRED_TO_CHARITY — «Перечислен в фонд»,
+        FAILED — «Ошибка операции»
+      enum: [PENDING_PAYMENT, PAID, REFUND_PENDING, REFUNDED, CHARITY_TRANSFER_PENDING, TRANSFERRED_TO_CHARITY, FAILED]
+    Deposit:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        pactId: { type: integer, format: int64 }
+        amount: { $ref: '#/components/schemas/Money' }
+        currency: { type: string, example: RUB }
+        status: { $ref: '#/components/schemas/DepositStatus' }
+        statusLabel: { type: string, example: Ожидает оплаты }
+        nextAction:
+          type: string
+          nullable: true
+          description: Что пользователь может сделать дальше (2.5.7)
+          example: Оплатите залог, чтобы пакт стал активным
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    PaymentInitResponse:
+      type: object
+      properties:
+        depositId: { type: integer, format: int64 }
+        transactionId: { type: integer, format: int64 }
+        confirmationUrl: { type: string, format: uri, description: Страница оплаты YooKassa — сюда редирект, example: 'https://yoomoney.ru/checkout/payments/v2/contract?orderId=2c7f...' }
+        status: { $ref: '#/components/schemas/TransactionStatus' }
+    TransactionStatus:
+      type: string
+      enum: [PENDING, SUCCESS, FAILED]
+    Transaction:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        depositId: { type: integer, format: int64 }
+        type: { type: string, enum: [DEPOSIT, REFUND, CHARITY_TRANSFER] }
+        amount: { $ref: '#/components/schemas/Money' }
+        currency: { type: string, example: RUB }
+        status: { $ref: '#/components/schemas/TransactionStatus' }
+        providerOperationId: { type: string, nullable: true }
+        errorMessage: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time, nullable: true }
+    YooKassaWebhook:
+      type: object
+      description: Формат задаётся YooKassa, здесь — основные поля
+      properties:
+        type: { type: string, example: notification }
+        event:
+          type: string
+          enum: [payment.succeeded, payment.canceled, payment.waiting_for_capture, refund.succeeded, payout.succeeded, payout.canceled]
+        object:
+          type: object
+          properties:
+            id: { type: string, example: 2c7f1a3e-000f-5000-9000-1b2c3d4e5f60 }
+            status: { type: string, example: succeeded }
+            amount:
+              type: object
+              properties:
+                value: { type: string, example: '500.00' }
+                currency: { type: string, example: RUB }
+            metadata:
+              type: object
+              description: То, что мы сами передали при создании платежа
+              properties:
+                depositId: { type: string, example: '301' }
+                transactionId: { type: string, example: '481' }
+
+    # ── Check-ins ──
+    CheckInStatus:
+      type: string
+      enum: [PENDING, APPROVED, REJECTED, AUTO_APPROVED]
+    ProofInput:
+      type: object
+      required: [type]
+      description: Заполняется одно из полей в зависимости от type
+      properties:
+        type: { type: string, enum: [FILE, LINK, TEXT] }
+        fileUrl: { type: string, description: 'Для FILE — url из POST /files' }
+        externalUrl: { type: string, format: uri, description: 'Для LINK' }
+        description: { type: string, maxLength: 2000, description: 'Для TEXT — сам текст, для остальных — подпись' }
+    Proof:
+      allOf:
+        - $ref: '#/components/schemas/ProofInput'
+        - type: object
+          properties:
+            id: { type: integer, format: int64 }
+            uploadedAt: { type: string, format: date-time }
+    CreateCheckInRequest:
+      type: object
+      required: [proofs]
+      properties:
+        milestoneId: { type: integer, format: int64, nullable: true, example: 7 }
+        comment: { type: string, maxLength: 2000, example: 'Теорию дописал, ссылка на гугл-док' }
+        proofs:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: { $ref: '#/components/schemas/ProofInput' }
+    Review:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        reviewer: { $ref: '#/components/schemas/UserShort' }
+        status: { type: string, enum: [APPROVED, REJECTED] }
+        comment: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+    CreateReviewRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [APPROVED, REJECTED] }
+        comment: { type: string, maxLength: 2000, description: 'Обязательно при REJECTED', example: Не видно выводов в конце }
+    CheckIn:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        participantId: { type: integer, format: int64 }
+        author: { $ref: '#/components/schemas/UserShort' }
+        milestone: { $ref: '#/components/schemas/Milestone' }
+        attemptNumber: { type: integer, example: 1, description: 'Какая это попытка по этапу (1..3)' }
+        attemptsLeft: { type: integer, example: 2, description: 'Сколько попыток останется, если этот отчёт отклонят' }
+        status: { $ref: '#/components/schemas/CheckInStatus' }
+        comment: { type: string, nullable: true }
+        proofs:
+          type: array
+          items: { $ref: '#/components/schemas/Proof' }
+        reviews:
+          type: array
+          items: { $ref: '#/components/schemas/Review' }
+        submittedAt: { type: string, format: date-time }
+        autoApproveAt: { type: string, format: date-time, description: 'submittedAt + 48 часов' }
+        canReview: { type: boolean, description: Может ли текущий пользователь проверить этот отчёт }
+
+    # ── Chat ──
+    Message:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        pactId: { type: integer, format: int64 }
+        sender: { $ref: '#/components/schemas/UserShort' }
+        text: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    # ── Shop ──
+    ShopItemType:
+      type: string
+      enum: [AVATAR, FRAME, BACKGROUND]
+    ShopItem:
+      type: object
+      nullable: true
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string, example: Золотая рамка }
+        description: { type: string }
+        price: { type: integer, description: Цена в монетах, example: 120 }
+        itemType: { $ref: '#/components/schemas/ShopItemType' }
+        imageUrl: { type: string }
+        owned: { type: boolean }
+    Purchase:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        item: { $ref: '#/components/schemas/ShopItem' }
+        price: { type: integer, description: Сколько монет списано }
+        purchasedAt: { type: string, format: date-time }
+        coinsLeft: { type: integer, example: 30 }
+
+    # ── Support ──
+    TicketStatus:
+      type: string
+      description: OPEN — «Открыто», IN_PROGRESS — «В работе», RESOLVED — «Решено», REJECTED — «Отклонено»
+      enum: [OPEN, IN_PROGRESS, RESOLVED, REJECTED]
+    CreateTicketRequest:
+      type: object
+      required: [subject, description]
+      properties:
+        subject: { type: string, maxLength: 200, example: Не вернулся залог }
+        description: { type: string, maxLength: 5000 }
+        pactId: { type: integer, format: int64, nullable: true }
+        screenshotUrl: { type: string, nullable: true, description: 'url из POST /files' }
+    SupportTicket:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        user: { $ref: '#/components/schemas/UserShort' }
+        subject: { type: string }
+        description: { type: string }
+        pactId: { type: integer, format: int64, nullable: true }
+        screenshotUrl: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/TicketStatus' }
+        adminComment: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }

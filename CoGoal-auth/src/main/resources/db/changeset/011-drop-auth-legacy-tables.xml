@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+ xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+ <changeSet id="011-drop-auth-legacy-tables" author="cogoal">
+  <preConditions onFail="HALT">
+   <sqlCheck expectedResult="0"><![CDATA[
+    SELECT count(*) FROM legacy_users l LEFT JOIN users u ON u.legacy_id=l.id WHERE u.id IS NULL
+   ]]></sqlCheck>
+   <sqlCheck expectedResult="0"><![CDATA[
+    SELECT count(*) FROM legacy_refresh_token l JOIN users u ON u.legacy_id=l.user_id
+    LEFT JOIN auth_tokens a ON a.token_hash=l.token_hash AND a.user_id=u.id AND a.type='REFRESH' AND a.family_id=l.family_id
+    WHERE l.expires_at>(CURRENT_TIMESTAMP AT TIME ZONE 'UTC') AND l.revoked_at IS NULL AND a.id IS NULL
+   ]]></sqlCheck>
+  </preConditions>
+  <dropTable tableName="legacy_refresh_token" cascadeConstraints="false"/>
+  <dropTable tableName="legacy_user_role" cascadeConstraints="false"/>
+  <dropTable tableName="legacy_users" cascadeConstraints="false"/>
+ </changeSet>
+</databaseChangeLog>

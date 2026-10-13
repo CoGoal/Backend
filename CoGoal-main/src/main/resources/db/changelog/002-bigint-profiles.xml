@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+ xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+ <changeSet id="002-bigint-profiles" author="cogoal">
+  <renameTable oldTableName="user_profiles" newTableName="legacy_user_profiles"/>
+  <createTable tableName="user_profiles">
+   <column name="id" type="BIGINT"><constraints primaryKey="true" primaryKeyName="pk_bigint_user_profiles" nullable="false"/></column>
+   <column name="legacy_id" type="UUID"><constraints unique="true" uniqueConstraintName="uq_bigint_profile_legacy"/></column>
+   <column name="email" type="VARCHAR(255)"><constraints nullable="false" unique="true" uniqueConstraintName="uq_bigint_profile_email"/></column>
+   <column name="username" type="VARCHAR(32)"><constraints nullable="false"/></column>
+   <column name="username_key" type="VARCHAR(32)"><constraints nullable="false" unique="true" uniqueConstraintName="uq_bigint_profile_username"/></column>
+   <column name="name" type="VARCHAR(100)"><constraints nullable="false"/></column>
+   <column name="avatar_url" type="VARCHAR(2048)"/>
+   <column name="role" type="VARCHAR(20)"><constraints nullable="false"/></column>
+   <column name="coins" type="INT"><constraints nullable="false"/></column>
+   <column name="created_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+   <column name="profile_version" type="BIGINT"><constraints nullable="false"/></column>
+  </createTable>
+  <createTable tableName="profile_sync_locks">
+   <column name="id" type="INT"><constraints primaryKey="true" nullable="false"/></column>
+  </createTable>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="0"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="1"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="2"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="3"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="4"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="5"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="6"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="7"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="8"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="9"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="10"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="11"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="12"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="13"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="14"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="15"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="16"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="17"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="18"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="19"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="20"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="21"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="22"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="23"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="24"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="25"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="26"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="27"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="28"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="29"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="30"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="31"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="32"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="33"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="34"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="35"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="36"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="37"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="38"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="39"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="40"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="41"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="42"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="43"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="44"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="45"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="46"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="47"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="48"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="49"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="50"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="51"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="52"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="53"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="54"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="55"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="56"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="57"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="58"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="59"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="60"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="61"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="62"/></insert>
+  <insert tableName="profile_sync_locks"><column name="id" valueNumeric="63"/></insert>
+ </changeSet>
+</databaseChangeLog>

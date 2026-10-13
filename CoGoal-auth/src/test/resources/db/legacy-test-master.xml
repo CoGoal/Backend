@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+ xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+ <include file="db/changeset/001-create-users.xml"/>
+ <include file="db/changeset/002-create-user-role.xml"/>
+ <include file="db/changeset/003-create-refresh-token.xml"/>
+ <include file="db/changeset/004-create-main-profile-outbox.xml"/>
+ <include file="db/changeset/005-account-actions.xml"/>
+</databaseChangeLog>

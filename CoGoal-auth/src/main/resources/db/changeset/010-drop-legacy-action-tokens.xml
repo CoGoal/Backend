@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+ xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+ <changeSet id="010-drop-legacy-action-tokens" author="cogoal">
+  <preConditions onFail="HALT">
+   <tableExists tableName="legacy_account_action_token"/>
+   <sqlCheck expectedResult="0"><![CDATA[
+    SELECT count(*) FROM legacy_account_action_token t
+    LEFT JOIN users u ON u.legacy_id=t.user_id
+    LEFT JOIN auth_tokens a ON a.token_hash=t.token_hash AND a.user_id=u.id
+     AND a.type=CASE WHEN t.purpose='EMAIL_CHANGE' THEN 'EMAIL_CONFIRM' ELSE t.purpose END
+    WHERE a.id IS NULL
+   ]]></sqlCheck>
+  </preConditions>
+  <dropTable tableName="legacy_account_action_token" cascadeConstraints="false"/>
+ </changeSet>
+</databaseChangeLog>

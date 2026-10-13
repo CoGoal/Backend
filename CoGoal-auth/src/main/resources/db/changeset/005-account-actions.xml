@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+ xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+ <changeSet id="005-account-actions" author="cogoal">
+  <addColumn tableName="users">
+   <column name="name" type="VARCHAR(100)"/>
+   <column name="avatar_url" type="VARCHAR(2048)"/>
+   <column name="profile_version" type="BIGINT" defaultValueNumeric="1"><constraints nullable="false"/></column>
+  </addColumn>
+  <sql>UPDATE users SET name=username WHERE name IS NULL</sql>
+  <addNotNullConstraint tableName="users" columnName="name" columnDataType="VARCHAR(100)"/>
+  <addColumn tableName="main_profile_outbox">
+   <column name="name" type="VARCHAR(100)"/>
+   <column name="avatar_url" type="VARCHAR(2048)"/>
+   <column name="profile_version" type="BIGINT" defaultValueNumeric="1"><constraints nullable="false"/></column>
+   <column name="role" type="VARCHAR(20)" defaultValue="USER"><constraints nullable="false"/></column>
+  </addColumn>
+  <sql>UPDATE main_profile_outbox SET name=username WHERE name IS NULL</sql>
+  <addNotNullConstraint tableName="main_profile_outbox" columnName="name" columnDataType="VARCHAR(100)"/>
+  <createTable tableName="account_action_token">
+   <column name="id" type="UUID"><constraints primaryKey="true" nullable="false"/></column>
+   <column name="user_id" type="UUID"><constraints nullable="false"/></column>
+   <column name="token_hash" type="VARCHAR(64)"><constraints unique="true" nullable="false"/></column>
+   <column name="purpose" type="VARCHAR(30)"><constraints nullable="false"/></column>
+   <column name="email" type="VARCHAR(255)"><constraints nullable="false"/></column>
+   <column name="expires_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+   <column name="consumed" type="BOOLEAN" defaultValueBoolean="false"><constraints nullable="false"/></column>
+  </createTable>
+  <addForeignKeyConstraint baseTableName="account_action_token" baseColumnNames="user_id" referencedTableName="users" referencedColumnNames="id" constraintName="fk_action_user" onDelete="CASCADE"/>
+  <createIndex tableName="account_action_token" indexName="idx_action_user"><column name="user_id"/></createIndex>
+  <createTable tableName="mail_outbox">
+   <column name="id" type="UUID"><constraints primaryKey="true" nullable="false"/></column>
+   <column name="recipient" type="VARCHAR(255)"><constraints nullable="false"/></column>
+   <column name="body_encrypted" type="TEXT"><constraints nullable="false"/></column>
+   <column name="expires_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+   <column name="next_attempt_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+   <column name="attempts" type="INT" defaultValueNumeric="0"><constraints nullable="false"/></column>
+  </createTable>
+  <createIndex tableName="mail_outbox" indexName="idx_mail_due"><column name="next_attempt_at"/></createIndex>
+ </changeSet>
+</databaseChangeLog>
