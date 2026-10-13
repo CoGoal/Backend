@@ -1,0 +1,10 @@
+# Loaded in addition to src/main/resources/application.yml (config/ has a higher priority):
+# tests never talk to Eureka
+eureka:
+  client:
+    enabled: false
+
+spring:
+  kafka:
+    admin:
+      auto-create: false

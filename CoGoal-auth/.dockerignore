@@ -1,0 +1,12 @@
+target/
+.idea/
+*.iml
+.git/
+.gitignore
+.gitattributes
+docs/
+data/
+HELP.md
+IMPLEMENTATION_PLAN.md
+Dockerfile
+.dockerignore

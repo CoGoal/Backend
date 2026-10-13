@@ -1,1 +1,14 @@
-databaseChangeLog: []
+databaseChangeLog:
+  - changeSet:
+      id: 001-user-profiles
+      author: cogoal
+      changes:
+        - sql:
+            sql: |
+              CREATE TABLE user_profiles (
+                id UUID PRIMARY KEY, email VARCHAR(255) NOT NULL UNIQUE,
+                username VARCHAR(32) NOT NULL, username_key VARCHAR(32) NOT NULL UNIQUE, name VARCHAR(100) NOT NULL,
+                avatar_url VARCHAR(2048), role VARCHAR(20) NOT NULL,
+                coins INTEGER NOT NULL, created_at TIMESTAMP NOT NULL,
+                profile_version BIGINT NOT NULL
+              );

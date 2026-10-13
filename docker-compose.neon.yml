@@ -1,0 +1,27 @@
+# Merge with docker-compose.yml. Credentials come from the ignored .env.
+services:
+  postgres:
+    profiles: [local-db]
+  auth-db-init:
+    profiles: [local-db]
+  cogoal-main:
+    environment:
+      DB_URL: ${MAIN_DB_URL:?set MAIN_DB_URL for Neon}
+      DB_USERNAME: ${MAIN_DB_USERNAME:?set MAIN_DB_USERNAME for Neon}
+      DB_PASSWORD: ${MAIN_DB_PASSWORD:?set MAIN_DB_PASSWORD for Neon}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: ${DB_POOL_MIN_IDLE:-0}
+    depends_on: !override
+      kafka: {condition: service_healthy}
+      eureka: {condition: service_healthy}
+  auth:
+    environment:
+      DB_URL: ${AUTH_DB_URL:?set AUTH_DB_URL for Neon}
+      DB_USERNAME: ${AUTH_DB_USERNAME:?set AUTH_DB_USERNAME for Neon}
+      DB_PASSWORD: ${AUTH_DB_PASSWORD:?set AUTH_DB_PASSWORD for Neon}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: ${DB_POOL_MIN_IDLE:-0}
+    depends_on: !override
+      eureka: {condition: service_healthy}
+      mailpit: {condition: service_started}
+      kafka: {condition: service_healthy}

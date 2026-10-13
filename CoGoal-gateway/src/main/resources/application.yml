@@ -1,0 +1,104 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: CoGoal-gateway
+
+  cloud:
+    gateway:
+      server:
+        webflux:
+          default-filters:
+            # Only services inside the network may call main's /internal/**: a client-supplied token is never forwarded
+            - RemoveRequestHeader=X-Internal-Token
+            # Safety net in case a service also answers with CORS headers: the browser rejects duplicated ones
+            - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_FIRST
+          globalcors:
+            cors-configurations:
+              '[/**]':
+                # Comma separated, e.g. http://localhost:3000,https://cogoal.example. Empty = no cross-origin requests
+                allowed-origins: ${CORS_ALLOWED_ORIGINS:}
+                allowed-methods: GET,POST,PUT,PATCH,DELETE,OPTIONS
+                allowed-headers: Authorization,Content-Type,Idempotency-Key
+                max-age: 3600
+          # Authorization and the body (including multipart proofs) are passed through untouched.
+          # Paths not listed here get 404; that also covers main's /internal/**
+          routes:
+            # Explicit, so a broader route added later cannot expose the internal API by accident
+            - id: internal-blocked
+              uri: no://op
+              order: -100
+              predicates:
+                - Path=/internal/**
+              filters:
+                - SetStatus=404
+            # Before the main route: /api/v1/auth/** is also matched by /api/v1/**
+            - id: auth-api
+              uri: lb://COGOAL-AUTH
+              order: 0
+              predicates:
+                - Path=/api/v1/auth/**
+            - id: account-email-change
+              uri: lb://COGOAL-AUTH
+              order: 1
+              predicates:
+                - Path=/api/v1/users/me/email-change
+                - Method=POST
+            - id: main-api
+              uri: lb://COGOAL-MAIN
+              order: 10
+              predicates:
+                - Path=/api/v1/**
+            # OpenAPI specs for the Swagger UI of the gateway: /auth/v3/api-docs -> auth /v3/api-docs.
+            # The Host header is kept so the "servers" URL in the spec points at the gateway
+            - id: auth-api-docs
+              uri: lb://COGOAL-AUTH
+              predicates:
+                - Path=/auth/v3/api-docs/**
+              filters:
+                - RewritePath=/auth/(?<path>.*), /$\{path}
+                - PreserveHostHeader
+            - id: account-email-change
+              uri: lb://COGOAL-AUTH
+              order: 1
+              predicates:
+                - Path=/api/v1/users/me/email-change
+                - Method=POST
+            - id: main-api-docs
+              uri: lb://COGOAL-MAIN
+              predicates:
+                - Path=/main/v3/api-docs/**
+              filters:
+                - RewritePath=/main/(?<path>.*), /$\{path}
+                - PreserveHostHeader
+
+eureka:
+  client:
+    # EUREKA_ENABLED=false: no registry at all (then lb:// targets come from spring.cloud.discovery.client.simple)
+    enabled: ${EUREKA_ENABLED:true}
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+    # New main/auth instances become routable within seconds instead of the default 30s
+    registry-fetch-interval-seconds: 5
+  instance:
+    # Name under which the instance is reachable by the others: localhost locally, the service name in docker compose
+    hostname: ${EUREKA_INSTANCE_HOSTNAME:localhost}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    urls-primary-name: main
+    urls:
+      - name: main
+        url: /main/v3/api-docs
+      - name: auth
+        url: /auth/v3/api-docs
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health

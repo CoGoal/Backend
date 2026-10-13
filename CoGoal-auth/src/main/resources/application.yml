@@ -1,0 +1,131 @@
+server:
+  port: ${SERVER_PORT:8081}
+
+spring:
+  application:
+    name: CoGoal-auth
+
+  cloud:
+    # Spring Cloud 2025.1.x officially supports Boot 4.0.x; this service runs on 4.1.x
+    compatibility-verifier:
+      enabled: false
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/cg-auth}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Schema is owned by Liquibase; Hibernate only checks that entities match it
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        # Columns are TIMESTAMP without time zone: Instant fields map to them and are stored in UTC
+        jdbc:
+          time_zone: UTC
+        type:
+          preferred_instant_jdbc_type: TIMESTAMP
+
+  liquibase:
+    enabled: true
+    change-log: classpath:db/db.changelog-master.xml
+
+# Access tokens (HS256). secret, issuer and audience must be the same as in main-service
+security:
+  jwt:
+    # No default on purpose: without JWT_SECRET the application does not start
+    secret: ${JWT_SECRET:}
+    issuer: ${JWT_ISSUER:pact-auth}
+    audience: ${JWT_AUDIENCE:pact-main}
+    access-token-ttl: ${JWT_ACCESS_TTL:15m}
+    clock-skew: 30s
+
+app:
+  refresh-token:
+    ttl: ${JWT_REFRESH_TTL:30d}
+    # How often expired refresh tokens are deleted from the database
+    cleanup-interval: 1h
+  login:
+    max-failed-attempts: ${APP_LOGIN_MAX_FAILED_ATTEMPTS:5}
+    lock-duration: ${APP_LOGIN_LOCK_DURATION:30m}
+  kafka:
+    profile-topic: ${KAFKA_PROFILE_TOPIC:cogoal.user-profiles.v1}
+    partitions: 3
+    send-timeout: 15s
+  scheduling:
+    # Outbox sender and refresh token cleanup (off in tests)
+    enabled: ${APP_SCHEDULING_ENABLED:true}
+  outbox:
+    poll-interval: ${APP_OUTBOX_POLL_INTERVAL:5s}
+    batch-size: 20
+    initial-backoff: 10s
+    max-backoff: 1h
+    # A claimed task is not picked up again for this long (covers a crash between claim and result)
+    lease: 1m
+  cors:
+    # Comma separated, e.g. http://localhost:3000,https://cogoal.example. Empty = CORS disabled
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:}
+  bootstrap-admin:
+    email: ${BOOTSTRAP_ADMIN_EMAIL:}
+    password: ${BOOTSTRAP_ADMIN_PASSWORD:}
+    username: ${BOOTSTRAP_ADMIN_USERNAME:admin}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+# Service registry. Main and auth register in Eureka so the gateway can find them (lb://COGOAL-MAIN, lb://COGOAL-AUTH).
+# EUREKA_ENABLED=false turns the client off completely (tests do that in src/test/resources/config/application.yml)
+eureka:
+  client:
+    enabled: ${EUREKA_ENABLED:true}
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+  instance:
+    # Name under which the instance is reachable by the gateway: localhost locally, the service name in docker compose
+    hostname: ${EUREKA_INSTANCE_HOSTNAME:localhost}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+---
+spring:
+  mail:
+    host: ${SMTP_HOST:localhost}
+    port: ${SMTP_PORT:1025}
+    username: ${SMTP_USERNAME:}
+    password: ${SMTP_PASSWORD:}
+    properties:
+      mail.smtp.auth: ${SMTP_AUTH:false}
+      mail.smtp.starttls.enable: ${SMTP_STARTTLS:false}
+      mail.smtp.connectiontimeout: 5000
+      mail.smtp.timeout: 5000
+      mail.smtp.writetimeout: 5000
+app:
+  mail:
+    from: ${MAIL_FROM:noreply@cogoal.local}
+    public-base-url: ${FRONTEND_URL:http://localhost:5173}
+    poll-interval: 5s
+
+---
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        delivery.timeout.ms: 15000
+        request.timeout.ms: 5000
+        max.block.ms: 10000

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+ xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+ <changeSet id="007-import-bigint" author="cogoal">
+  <addColumn tableName="users">
+   <column name="legacy_id" type="UUID"><constraints unique="true"/></column>
+   <column name="avatar_url" type="VARCHAR(2048)"/>
+   <column name="profile_version" type="BIGINT" defaultValueNumeric="1"><constraints nullable="false"/></column>
+   <column name="failed_login_attempts" type="INT" defaultValueNumeric="0"><constraints nullable="false"/></column>
+   <column name="locked_until" type="TIMESTAMP"/>
+   <column name="updated_at" type="TIMESTAMP" defaultValueComputed="CURRENT_TIMESTAMP"><constraints nullable="false"/></column>
+  </addColumn>
+  <sql>ALTER TABLE users ADD CONSTRAINT ck_users_email_lower CHECK (email = lower(email))</sql>
+  <addColumn tableName="auth_tokens"><column name="family_id" type="UUID"/></addColumn>
+  <createIndex tableName="auth_tokens" indexName="ix_auth_tokens_family"><column name="family_id"/></createIndex>
+  <sql><![CDATA[
+   INSERT INTO users(legacy_id,username,email,password_hash,name,role,created_at,updated_at,avatar_url,profile_version,failed_login_attempts,locked_until)
+   SELECT u.id,u.username,u.email,u.password_hash,u.name,
+    CASE WHEN EXISTS(SELECT 1 FROM legacy_user_role r WHERE r.user_id=u.id AND r.role='ADMIN') THEN 'ADMIN' ELSE 'USER' END,
+    u.created_at,u.updated_at,u.avatar_url,u.profile_version,u.failed_login_attempts,u.locked_until
+   FROM legacy_users u ORDER BY u.created_at,u.id;
+   INSERT INTO auth_tokens(user_id,token_hash,type,expires_at,revoked_at,created_at,family_id)
+   SELECT u.id,t.token_hash,'REFRESH',t.expires_at,t.revoked_at,t.created_at,t.family_id
+   FROM legacy_refresh_token t JOIN users u ON u.legacy_id=t.user_id;
+   INSERT INTO auth_tokens(user_id,token_hash,type,new_email,expires_at,used_at)
+   SELECT u.id,t.token_hash,CASE WHEN t.purpose='EMAIL_CHANGE' THEN 'EMAIL_CONFIRM' ELSE t.purpose END,
+    CASE WHEN t.purpose='EMAIL_CHANGE' THEN t.email ELSE NULL END,t.expires_at,
+    CASE WHEN t.consumed THEN CURRENT_TIMESTAMP ELSE NULL END
+   FROM legacy_account_action_token t JOIN users u ON u.legacy_id=t.user_id;
+  ]]></sql>
+  <dropForeignKeyConstraint baseTableName="main_profile_outbox" constraintName="fk_main_profile_outbox_user"/>
+  <renameColumn tableName="main_profile_outbox" oldColumnName="user_id" newColumnName="legacy_user_id" columnDataType="UUID"/>
+  <dropNotNullConstraint tableName="main_profile_outbox" columnName="legacy_user_id" columnDataType="UUID"/>
+  <addColumn tableName="main_profile_outbox"><column name="user_id" type="BIGINT"/></addColumn>
+  <sql><![CDATA[
+   UPDATE main_profile_outbox o SET user_id=u.id,email=u.email,username=u.username,name=u.name,avatar_url=u.avatar_url,
+    role=u.role,profile_version=u.profile_version,status='PENDING',attempts=0,next_attempt_at=CURRENT_TIMESTAMP,last_error=NULL
+   FROM users u WHERE u.legacy_id=o.legacy_user_id;
+   INSERT INTO main_profile_outbox(id,user_id,legacy_user_id,email,username,name,avatar_url,role,profile_version,status,attempts,next_attempt_at,created_at,updated_at)
+   SELECT gen_random_uuid(),u.id,u.legacy_id,u.email,u.username,u.name,u.avatar_url,u.role,u.profile_version,'PENDING',0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
+   FROM users u WHERE NOT EXISTS(SELECT 1 FROM main_profile_outbox o WHERE o.user_id=u.id);
+  ]]></sql>
+  <addNotNullConstraint tableName="main_profile_outbox" columnName="user_id" columnDataType="BIGINT"/>
+  <addForeignKeyConstraint baseTableName="main_profile_outbox" baseColumnNames="user_id" referencedTableName="users" referencedColumnNames="id" constraintName="fk_bigint_outbox_user" onDelete="CASCADE"/>
+  <createIndex tableName="main_profile_outbox" indexName="idx_bigint_outbox_user"><column name="user_id"/></createIndex>
+ </changeSet>
+</databaseChangeLog>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+ xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+ <changeSet id="009-profile-ownership" author="cogoal">
+  <!-- Initial display name is a transient registration event payload, never account state. -->
+  <renameColumn tableName="main_profile_outbox" oldColumnName="name" newColumnName="initial_name" columnDataType="VARCHAR(100)"/>
+  <dropNotNullConstraint tableName="main_profile_outbox" columnName="initial_name" columnDataType="VARCHAR(100)"/>
+  <renameColumn tableName="main_profile_outbox" oldColumnName="avatar_url" newColumnName="initial_avatar_url" columnDataType="VARCHAR(2048)"/>
+  <sql>UPDATE main_profile_outbox SET initial_name=NULL,initial_avatar_url=NULL WHERE status='DONE'</sql>
+  <dropColumn tableName="users" columnName="name"/>
+  <dropColumn tableName="users" columnName="avatar_url"/>
+ </changeSet>
+</databaseChangeLog>
