@@ -4,6 +4,14 @@ Backend включает CoGoal-main, CoGoal-auth, CoGoal-eureka и CoGoal-gatew
 
 ## Запуск
 
+Frontend — отдельный Git-репозиторий. Для совместного запуска клонируйте его в `Frontend` внутри этой папки, если его ещё нет:
+
+```powershell
+git clone --branch features/CG-4/FrontDeployConfig https://github.com/CoGoal/Frontend.git Frontend
+```
+
+Если фронт уже находится в другой папке, задайте `FRONTEND_CONTEXT` в `.env` — путь к папке с его `Dockerfile`. Папка `Frontend` исключена из Git backend; изменения фронта сохраняются в его собственном репозитории.
+
 Из этой папки:
 
 ```powershell
@@ -14,6 +22,7 @@ docker compose up -d --build
 
 | Адрес | Назначение |
 | --- | --- |
+| http://localhost:5173 | Фронт: вход, регистрация, профиль и настройки аккаунта |
 | http://localhost:8080/swagger-ui.html | Swagger UI, выбор main или auth |
 | http://localhost:8080/auth/v3/api-docs | Реализованный OpenAPI auth |
 | http://localhost:8080/main/v3/api-docs | Реализованный OpenAPI main |
@@ -22,6 +31,14 @@ docker compose up -d --build
 | http://localhost:8025 | Локальные письма в Mailpit |
 
 В локальном режиме main использует базу CoGoal, auth — cg-auth. Сервис auth-db-init создаёт cg-auth, если её ещё нет; он работает и с существующим томом PostgreSQL. В текущей рабочей копии сервисы переведены на Neon: main_db и auth_db. Main и auth не публикуют HTTP-порты наружу. Для остановки используйте `docker compose stop`.
+
+Frontend собирается через Node.js и раздаётся Nginx. Запросы `/api/v1/**` проксируются в gateway внутри Compose; браузеру не нужен адрес контейнера. Ссылки `/reset-password?token=...` и `/email-confirm?token=...` открывают соответствующие формы даже после перезагрузки страницы. `FRONTEND_URL` в auth должен совпадать с внешним адресом фронта; по умолчанию это `http://localhost:5173`. При смене порта задайте и `FRONTEND_PORT`, и `FRONTEND_URL`.
+
+Чтобы поднять только бэк без клона фронта:
+
+```powershell
+docker compose up -d --build kafka mailpit eureka auth cogoal-main gateway
+```
 
 ## Базы Neon
 
